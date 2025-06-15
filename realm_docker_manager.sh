@@ -368,21 +368,10 @@ create_rule() {
   # 添加新规则到 JSON 配置
   add_endpoint_to_json() {
     local protocol=$1
-
-    # IPv4 监听地址
-    local listen_addr_v4="0.0.0.0:$listen_port"
-    jq --arg listen "$listen_addr_v4" \
-       --arg remote "$formatted_target" \
-       --arg protocol "$protocol" \
-       '.endpoints += [{
-         "listen": $listen,
-         "remote": $remote,
-         "protocol": $protocol
-       }]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-
-    # IPv6 监听地址
-    local listen_addr_v6="[::]:$listen_port"
-    jq --arg listen "$listen_addr_v6" \
+    local listen_addr="[::]:$listen_port"
+    
+    # 使用 IPv6 双栈监听地址，自动处理 IPv4 和 IPv6 流量
+    jq --arg listen "$listen_addr" \
        --arg remote "$formatted_target" \
        --arg protocol "$protocol" \
        '.endpoints += [{
@@ -456,10 +445,10 @@ list_rules_for_deletion() {
     return 1
   fi
   
-  # 使用 jq 提取并合并 IPv4/IPv6 规则
-  local unique_rules=$(jq -r '.endpoints[] | "\(.listen | split(":") | .[-1]) (\(.protocol)) -> \(.remote)"' "$CONFIG_FILE" 2>/dev/null | sort -u)
+  # 使用 jq 精确提取信息，并将端点信息存储到数组中
+  local endpoints=$(jq -r '.endpoints[] | "\(.listen) (\(.protocol)) -> \(.remote)"' "$CONFIG_FILE" 2>/dev/null)
   
-  if [ -z "$unique_rules" ]; then
+  if [ -z "$endpoints" ]; then
     log_warning "未找到任何转发规则"
     return 1
   fi
@@ -467,30 +456,15 @@ list_rules_for_deletion() {
   # 清空全局数组
   unset rule_endpoints
   declare -g -a rule_endpoints
-  unset rule_ports
-  declare -g -a rule_ports
-  unset rule_protocols
-  declare -g -a rule_protocols
-  unset rule_remotes
-  declare -g -a rule_remotes
   
   local rule_count=0
   while IFS= read -r line; do
     rule_count=$((rule_count + 1))
-    echo "$rule_count. 端口 $line (IPv4 + IPv6)"
+    echo "$rule_count. $line (IPv4 + IPv6 双栈)"
     
     # 存储完整的端点信息
     rule_endpoints[$rule_count]="$line"
-    
-    # 提取端口、协议和远程地址信息
-    local port=$(echo "$line" | sed -E 's/^([0-9]+) .*/\1/')
-    local protocol=$(echo "$line" | sed -E 's/^[0-9]+ \(([^)]+)\) .*/\1/')
-    local remote=$(echo "$line" | sed -E 's/.* -> (.*)$/\1/')
-    
-    rule_ports[$rule_count]="$port"
-    rule_protocols[$rule_count]="$protocol"
-    rule_remotes[$rule_count]="$remote"
-  done <<< "$unique_rules"
+  done <<< "$endpoints"
   
   # 返回规则数量
   echo "$rule_count" > /tmp/rule_count
