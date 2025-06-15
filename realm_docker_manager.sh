@@ -368,7 +368,7 @@ create_rule() {
   # 添加新规则到 JSON 配置
   add_endpoint_to_json() {
     local protocol=$1
-    local listen_addr="0.0.0.0:$listen_port"
+    local listen_addr=":$listen_port"  # 改为 :: 监听所有地址（IPv4+IPv6）
     
     # 使用 jq 添加端点到配置文件
     jq --arg listen "$listen_addr" \
