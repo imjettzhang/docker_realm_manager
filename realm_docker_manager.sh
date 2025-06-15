@@ -365,13 +365,24 @@ create_rule() {
   # 备份现有配置
   cp $CONFIG_FILE $CONFIG_FILE.bak
 
-  # 添加新规则到 JSON 配置
+  # 添加新规则到 JSON 配置 - 支持 IPv4 和 IPv6 双栈
   add_endpoint_to_json() {
     local protocol=$1
-    local listen_addr=":$listen_port"  # 改为 :: 监听所有地址（IPv4+IPv6）
+    local ipv4_listen="0.0.0.0:$listen_port"
+    local ipv6_listen="[::]:$listen_port"
     
-    # 使用 jq 添加端点到配置文件
-    jq --arg listen "$listen_addr" \
+    # 添加 IPv4 监听
+    jq --arg listen "$ipv4_listen" \
+       --arg remote "$formatted_target" \
+       --arg protocol "$protocol" \
+       '.endpoints += [{
+         "listen": $listen,
+         "remote": $remote,
+         "protocol": $protocol
+       }]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    
+    # 添加 IPv6 监听
+    jq --arg listen "$ipv6_listen" \
        --arg remote "$formatted_target" \
        --arg protocol "$protocol" \
        '.endpoints += [{
@@ -383,17 +394,17 @@ create_rule() {
 
   case $protocol_choice in
     1) 
-      # TCP 转发配置
+      # TCP 转发配置 - IPv4 + IPv6
       add_endpoint_to_json "tcp"
       add_firewall_rule "$listen_port" "tcp"
       ;;
     2)
-      # UDP 转发配置
+      # UDP 转发配置 - IPv4 + IPv6
       add_endpoint_to_json "udp"
       add_firewall_rule "$listen_port" "udp"
       ;;
     3)
-      # TCP + UDP 转发配置
+      # TCP + UDP 转发配置 - IPv4 + IPv6
       add_endpoint_to_json "tcp"
       add_endpoint_to_json "udp"
       add_firewall_rule "$listen_port" "both"
@@ -422,6 +433,7 @@ create_rule() {
     echo ">>> 转发详情:"
     echo "本地端口: $listen_port -> 目标: $display_target"
     echo "协议: $proto"
+    echo "监听: IPv4 (0.0.0.0:$listen_port) + IPv6 ([::]:$listen_port)"
   else
     log_warning "转发规则已添加，但端口未正常监听，请检查日志："
     docker logs --tail 10 $CONTAINER_NAME
