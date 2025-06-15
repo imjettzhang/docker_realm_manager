@@ -420,9 +420,9 @@ create_rule() {
   if netstat -tunlp | grep -q ":$listen_port.*realm"; then
     log_success "转发规则已添加并生效！"
     echo ">>> 转发详情:"
-    echo "本地端口: $listen_port (IPv4 + IPv6) -> 目标: $display_target"
+    echo "本地端口: $listen_port-> 目标: $display_target"
     echo "协议: $proto"
-    echo "监听地址: 0.0.0.0:$listen_port 和 [::]:$listen_port"
+    echo "监听地址: [::]:$listen_port (自动处理 IPv4 和 IPv6 流量)"
   else
     log_warning "转发规则已添加，但端口未正常监听，请检查日志："
     docker logs --tail 10 $CONTAINER_NAME
@@ -460,7 +460,7 @@ list_rules_for_deletion() {
   local rule_count=0
   while IFS= read -r line; do
     rule_count=$((rule_count + 1))
-    echo "$rule_count. $line (IPv4 + IPv6 双栈)"
+    echo "$rule_count. $line"
     
     # 存储完整的端点信息
     rule_endpoints[$rule_count]="$line"
@@ -505,43 +505,39 @@ delete_rule() {
     fi
   done
 
-  # 获取选中的规则信息
-  local port="${rule_ports[$rule_number]}"
-  local protocol="${rule_protocols[$rule_number]}"
-  local remote_addr="${rule_remotes[$rule_number]}"
-  
-  if [ -z "$port" ] || [ -z "$protocol" ] || [ -z "$remote_addr" ]; then
-    log_error "无法获取选中的规则信息"
+  # 获取选中的端点信息
+  local selected_endpoint="${rule_endpoints[$rule_number]}"
+  if [ -z "$selected_endpoint" ]; then
+    log_error "无法获取选中的端点信息"
     return 1
   fi
   
-  echo ">>> 准备删除规则: 端口 $port ($protocol) -> $remote_addr (IPv4 + IPv6)"
+  echo ">>> 准备删除规则: $selected_endpoint"
+
+  # 提取端口和协议信息
+  local listen_addr=$(echo "$selected_endpoint" | sed -E 's/^([^ ]+) .*/\1/')
+  local protocol=$(echo "$selected_endpoint" | sed -E 's/^[^ ]+ \(([^)]+)\) .*/\1/')
+  local remote_addr=$(echo "$selected_endpoint" | sed -E 's/.* -> (.*)$/\1/')
+  local port=$(echo "$listen_addr" | sed -E 's/.*:([0-9]+)$/\1/')
 
   # 备份配置文件
   cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
 
-  # 使用 jq 精确删除规则 - 同时删除 IPv4 和 IPv6 规则
-  log_success "使用 jq 工具删除 IPv4 和 IPv6 规则..."
+  # 使用 jq 精确删除规则
+  log_success "使用 jq 工具删除规则..."
   
-  # 构建 IPv4 和 IPv6 监听地址
-  local listen_addr_v4="0.0.0.0:$port"
-  local listen_addr_v6="[::]:$port"
-  
-  # 删除 IPv4 和 IPv6 端点
-  jq --arg listen_v4 "$listen_addr_v4" \
-     --arg listen_v6 "$listen_addr_v6" \
+  # 删除选中的端点
+  jq --arg listen "$listen_addr" \
      --arg protocol "$protocol" \
      --arg remote "$remote_addr" \
-     '.endpoints |= map(select(not((.listen == $listen_v4 or .listen == $listen_v6) and .protocol == $protocol and .remote == $remote)))' \
+     '.endpoints |= map(select(.listen != $listen or .protocol != $protocol or .remote != $remote))' \
      "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
   
   # 检查删除结果
-  local remaining_rules=$(jq -e --arg listen_v4 "$listen_addr_v4" --arg listen_v6 "$listen_addr_v6" --arg protocol "$protocol" --arg remote "$remote_addr" \
-    '.endpoints[] | select((.listen == $listen_v4 or .listen == $listen_v6) and .protocol == $protocol and .remote == $remote)' \
-    "$CONFIG_FILE" 2>/dev/null | wc -l)
-  
-  if [ "$remaining_rules" -eq 0 ]; then
-    log_success "成功删除规则: 端口 $port ($protocol) -> $remote_addr (IPv4 + IPv6)"
+  if ! jq -e --arg listen "$listen_addr" --arg protocol "$protocol" --arg remote "$remote_addr" \
+    '.endpoints[] | select(.listen == $listen and .protocol == $protocol and .remote == $remote)' \
+    "$CONFIG_FILE" &>/dev/null; then
+    log_success "成功删除规则: $selected_endpoint"
     
     # 检查是否还有相同端口的其他协议规则
     if ! jq -e --arg port ":$port" '.endpoints[] | select(.listen | endswith($port))' "$CONFIG_FILE" &>/dev/null; then
